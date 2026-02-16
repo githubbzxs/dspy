@@ -321,9 +321,20 @@ class RLM(Module):
             annotation = getattr(field, "annotation", str)
             field_info = {"name": name}
             # Only include type for simple types that work in function signatures
-            # Complex types like Literal, Union, etc. are not included
+            # Complex types are provided via JSON schema for sandbox metadata.
             if annotation in SIMPLE_TYPES:
                 field_info["type"] = annotation.__name__
+            else:
+                try:
+                    field_info["json_schema"] = pydantic.TypeAdapter(annotation).json_schema()
+                except Exception:
+                    # Some Python annotations are not representable as JSON schema.
+                    logger.debug(
+                        "Skipping JSON schema for output field '%s' with annotation %r",
+                        name,
+                        annotation,
+                        exc_info=True,
+                    )
             fields.append(field_info)
         return fields
 

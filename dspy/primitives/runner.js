@@ -40,11 +40,41 @@ const toPythonLiteral = (value) => {
   return JSON.stringify(value);  // Works for strings, numbers, arrays, objects
 };
 
+const JSON_SCHEMA_TYPE_TO_PYTHON = {
+  string: "str",
+  integer: "int",
+  number: "float",
+  boolean: "bool",
+  array: "list",
+  object: "dict",
+  null: "None",
+};
+
+const makeSchemaAssignment = (identifier, schemaMap) => {
+  if (!schemaMap || Object.keys(schemaMap).length === 0) {
+    return "";
+  }
+  const schemaJson = JSON.stringify(schemaMap);
+  return `${identifier}.__json_schema__ = json.loads(${JSON.stringify(schemaJson)})`;
+};
+
 const makeToolWrapper = (toolName, parameters = []) => {
+  const schemaByName = {};
+  for (const p of parameters) {
+    if (p.json_schema) {
+      schemaByName[p.name] = p.json_schema;
+    }
+  }
+  const schemaAssignment = makeSchemaAssignment(toolName, schemaByName);
+
   // Build signature parts: "query: str, limit: int = 10"
   const sigParts = parameters.map(p => {
     let part = p.name;
-    if (p.type) part += `: ${p.type}`;
+    const inferredType = (!p.type && p.json_schema && typeof p.json_schema.type === "string")
+      ? JSON_SCHEMA_TYPE_TO_PYTHON[p.json_schema.type]
+      : null;
+    const pythonType = p.type || inferredType;
+    if (pythonType) part += `: ${pythonType}`;
     if (p.default !== undefined) part += ` = ${toPythonLiteral(p.default)}`;
     return part;
   });
@@ -59,6 +89,7 @@ from pyodide.ffi import run_sync, JsProxy
 def ${toolName}(*args, **kwargs):
     result = run_sync(_js_tool_call("${toolName}", json.dumps({"args": args, "kwargs": kwargs})))
     return result.to_py() if isinstance(result, JsProxy) else result
+${schemaAssignment}
 `;
   }
 
@@ -69,6 +100,7 @@ def ${toolName}(${signature}):
     _args = [${argNames.join(', ')}]
     result = run_sync(_js_tool_call("${toolName}", json.dumps({"args": _args, "kwargs": {}})))
     return result.to_py() if isinstance(result, JsProxy) else result
+${schemaAssignment}
 `;
 };
 
@@ -83,16 +115,30 @@ def SUBMIT(output):
 `;
   }
 
+  const schemaByName = {};
+  for (const output of outputs) {
+    if (output.json_schema) {
+      schemaByName[output.name] = output.json_schema;
+    }
+  }
+  const schemaAssignment = makeSchemaAssignment("SUBMIT", schemaByName);
+
   const sigParts = outputs.map(o => {
     let part = o.name;
-    if (o.type) part += `: ${o.type}`;
+    const inferredType = (!o.type && o.json_schema && typeof o.json_schema.type === "string")
+      ? JSON_SCHEMA_TYPE_TO_PYTHON[o.json_schema.type]
+      : null;
+    const pythonType = o.type || inferredType;
+    if (pythonType) part += `: ${pythonType}`;
     return part;
   });
   const dictParts = outputs.map(o => `"${o.name}": ${o.name}`);
 
   return `
+import json
 def SUBMIT(${sigParts.join(', ')}):
     raise FinalOutput({${dictParts.join(', ')}})
+${schemaAssignment}
 `;
 };
 

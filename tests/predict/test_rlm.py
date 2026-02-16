@@ -8,6 +8,7 @@ Test organization:
 
 from contextlib import contextmanager
 
+import pydantic
 import pytest
 
 from dspy.adapters.types.tool import Tool
@@ -266,6 +267,36 @@ class TestRLMInitialization:
 
         with pytest.raises(RuntimeError, match="LLM call limit exceeded"):
             tools["llm_query"](prompt="one more")
+
+    def test_output_fields_info_includes_json_schema_for_pydantic_type(self):
+        """Test that complex output types retain JSON schema metadata for sandbox registration."""
+        import dspy
+
+        class Person(pydantic.BaseModel):
+            name: str
+            age: int
+
+        class PersonSig(dspy.Signature):
+            query: str = dspy.InputField()
+            person: Person = dspy.OutputField()
+
+        rlm = RLM(PersonSig)
+        output_fields = rlm._get_output_fields_info()
+
+        assert output_fields == [
+            {
+                "name": "person",
+                "json_schema": {
+                    "properties": {
+                        "name": {"title": "Name", "type": "string"},
+                        "age": {"title": "Age", "type": "integer"},
+                    },
+                    "required": ["name", "age"],
+                    "title": "Person",
+                    "type": "object",
+                },
+            },
+        ]
 
 
 class TestRLMFormatting:

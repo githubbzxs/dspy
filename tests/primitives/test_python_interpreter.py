@@ -1,6 +1,7 @@
 import os
 import random
 
+import pydantic
 import pytest
 
 from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
@@ -297,6 +298,21 @@ def test_tool_default_args():
         assert result == "Hi, World!"
 
 
+def test_tool_pydantic_arg_parsing():
+    """Test that tool args are parsed into Pydantic models when annotated."""
+
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: Profile) -> str:
+        return f"hello {profile.name} ({profile.age})"
+
+    with PythonInterpreter(tools={"greet": greet}) as sandbox:
+        result = sandbox.execute('greet(profile={"name": "Ada", "age": "36"})')
+        assert result == "hello Ada (36)"
+
+
 # =============================================================================
 # Multi-Output SUBMIT Tests
 # =============================================================================
@@ -392,9 +408,73 @@ def test_extract_parameters_complex_types():
     params = sandbox._extract_parameters(complex_fn)
 
     assert len(params) == 2
-    # Complex types like Union are not included in type annotation
-    assert params[0] == {"name": "items", "default": None}
-    assert params[1] == {"name": "data", "default": None}
+    assert params[0]["name"] == "items"
+    assert params[0]["default"] is None
+    assert "json_schema" in params[0]
+
+    assert params[1]["name"] == "data"
+    assert params[1]["default"] is None
+    assert "json_schema" in params[1]
+
+
+def test_extract_parameters_includes_json_schema_for_pydantic_types():
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: Profile) -> str:
+        return f"hello {profile.name}"
+
+    sandbox = PythonInterpreter()
+    params = sandbox._extract_parameters(greet)
+
+    assert len(params) == 1
+    assert params[0]["name"] == "profile"
+    assert params[0]["json_schema"] == {
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "age": {"title": "Age", "type": "integer"},
+        },
+        "required": ["name", "age"],
+        "title": "Profile",
+        "type": "object",
+    }
+
+
+def test_coerce_tool_call_args_parses_pydantic_models():
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: Profile) -> str:
+        return f"hello {profile.name}"
+
+    sandbox = PythonInterpreter()
+    args, kwargs = sandbox._coerce_tool_call_arguments(
+        greet,
+        {"kwargs": {"profile": {"name": "Ada", "age": "36"}}},
+    )
+
+    profile = kwargs.get("profile") if "profile" in kwargs else args[0]
+    assert isinstance(profile, Profile)
+    assert profile.name == "Ada"
+    assert profile.age == 36
+
+
+def test_coerce_tool_call_args_raises_on_invalid_pydantic_input():
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: Profile) -> str:
+        return f"hello {profile.name}"
+
+    sandbox = PythonInterpreter()
+    with pytest.raises(pydantic.ValidationError):
+        sandbox._coerce_tool_call_arguments(
+            greet,
+            {"kwargs": {"profile": {"name": "Ada", "age": "not-an-int"}}},
+        )
 
 
 # =============================================================================

@@ -17,6 +17,8 @@ import threading
 from os import PathLike
 from typing import Any, Callable
 
+import pydantic
+
 from dspy.primitives.code_interpreter import SIMPLE_TYPES, CodeInterpreterError, FinalOutput
 
 __all__ = ["PythonInterpreter", "FinalOutput", "CodeInterpreterError"]
@@ -259,14 +261,68 @@ class PythonInterpreter:
         for name, param in sig.parameters.items():
             p = {"name": name}
             # Only include type for simple types that work in function signatures
-            # Complex types like Union, Optional, etc. are not included
+            # Complex types are provided via JSON schema metadata.
             if param.annotation != inspect.Parameter.empty:
                 if param.annotation in SIMPLE_TYPES:
                     p["type"] = param.annotation.__name__
+                else:
+                    try:
+                        p["json_schema"] = pydantic.TypeAdapter(param.annotation).json_schema()
+                    except Exception:
+                        # Some annotations cannot be translated to JSON schema.
+                        logger.debug(
+                            "Skipping JSON schema for tool parameter '%s' with annotation %r",
+                            name,
+                            param.annotation,
+                            exc_info=True,
+                        )
             if param.default != inspect.Parameter.empty:
                 p["default"] = param.default
             params.append(p)
         return params
+
+    def _coerce_tool_call_arguments(
+        self,
+        fn: Callable,
+        call_args: dict[str, Any],
+    ) -> tuple[list[Any], dict[str, Any]]:
+        """Coerce tool call args using function annotations when possible.
+
+        For non-simple annotations (including Pydantic models), values are parsed
+        via pydantic.TypeAdapter. Unsupported annotations are passed through.
+        """
+        call_args = call_args or {}
+        raw_args = list(call_args.get("args", []))
+        raw_kwargs = dict(call_args.get("kwargs", {}))
+
+        signature = inspect.signature(fn)
+        bound = signature.bind_partial(*raw_args, **raw_kwargs)
+
+        for name, value in list(bound.arguments.items()):
+            annotation = signature.parameters[name].annotation
+            if annotation == inspect.Parameter.empty or annotation in SIMPLE_TYPES:
+                continue
+
+            try:
+                adapter = pydantic.TypeAdapter(annotation)
+            except Exception:
+                logger.debug(
+                    "Skipping type coercion for tool parameter '%s' with annotation %r",
+                    name,
+                    annotation,
+                    exc_info=True,
+                )
+                continue
+
+            try:
+                bound.arguments[name] = adapter.validate_python(value)
+            except pydantic.ValidationError:
+                raise
+            except Exception:
+                # Unexpected coercion/runtime errors should not be silently swallowed.
+                raise
+
+        return list(bound.args), dict(bound.kwargs)
 
     def _register_tools(self) -> None:
         """Register tools and output fields with the sandbox."""
@@ -301,13 +357,17 @@ class PythonInterpreter:
         request_id = request["id"]
         params = request.get("params", {})
         tool_name = params.get("name")
-        args = params.get("args", [])
-        kwargs = params.get("kwargs", {})
+        call_args = {
+            "args": params.get("args", []),
+            "kwargs": params.get("kwargs", {}),
+        }
 
         try:
             if tool_name not in self.tools:
                 raise CodeInterpreterError(f"Unknown tool: {tool_name}")
-            result = self.tools[tool_name](*args, **kwargs)
+            fn = self.tools[tool_name]
+            args, kwargs = self._coerce_tool_call_arguments(fn, call_args)
+            result = fn(*args, **kwargs)
             is_json = isinstance(result, (list, dict))
             response = _jsonrpc_result(
                 {"value": json.dumps(result) if is_json else str(result or ""), "type": "json" if is_json else "string"},
