@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from litellm import ContextWindowExceededError
 
@@ -100,18 +100,23 @@ class ReAct(Module):
                 "When providing `next_tool_calls`, provide a list of tool calls. Each tool call should be a dictionary with 'name' and 'args' keys. "
                 "The 'name' must be one of the tool names listed above, and 'args' must be a dictionary in JSON format containing the arguments for that tool."
             )
-        else:
-            instr.append(
-                "When providing `next_tool_calls`, provide a list with a single tool call. The tool call should be a dictionary with 'name' and 'args' keys. "
-                "The 'name' must be one of the tool names listed above, and 'args' must be a dictionary in JSON format containing the arguments for that tool."
-            )
 
-        react_signature = (
-            dspy.Signature({**signature.input_fields}, "\n".join(instr))
-            .append("trajectory", dspy.InputField(), type_=str)
-            .append("next_thought", dspy.OutputField(), type_=str)
-            .append("next_tool_calls", dspy.OutputField(), type_=ToolCalls)
-        )
+            react_signature = (
+                dspy.Signature({**signature.input_fields}, "\n".join(instr))
+                .append("trajectory", dspy.InputField(), type_=str)
+                .append("next_thought", dspy.OutputField(), type_=str)
+                .append("next_tool_calls", dspy.OutputField(), type_=ToolCalls)
+            )
+        else:
+            instr.append("When providing `next_tool_args`, the value inside the field must be in JSON format")
+
+            react_signature = (
+                dspy.Signature({**signature.input_fields}, "\n".join(instr))
+                .append("trajectory", dspy.InputField(), type_=str)
+                .append("next_thought", dspy.OutputField(), type_=str)
+                .append("next_tool_name", dspy.OutputField(), type_=Literal[tuple(tools.keys())])
+                .append("next_tool_args", dspy.OutputField(), type_=dict[str, Any])
+            )
 
         fallback_signature = dspy.Signature(
             {**signature.input_fields, **signature.output_fields},
@@ -139,20 +144,36 @@ class ReAct(Module):
 
             trajectory[f"thought_{idx}"] = pred.next_thought
 
-            # Get list of ToolCall objects from ToolCalls
-            tool_calls = pred.next_tool_calls.tool_calls
+            # Handle different signature formats based on parallel_tool_calls
+            if self.parallel_tool_calls:
+                # Get list of ToolCall objects from ToolCalls
+                tool_calls = pred.next_tool_calls.tool_calls
 
-            # Store tool calls as dicts for trajectory (for serialization/logging)
-            trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
+                # Store tool calls as dicts for trajectory (for serialization/logging)
+                trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
 
-            # Check if "finish" is in the tool calls (should be the only tool call)
-            finish_calls = [tc for tc in tool_calls if tc.name == "finish"]
-            if finish_calls:
-                if len(tool_calls) > 1:
-                    logger.warning("finish tool called alongside other tools - only finish will be executed")
-                    tool_calls = finish_calls
-                # Execute only finish and break
+                # Check if "finish" is in the tool calls (should be the only tool call)
+                finish_calls = [tc for tc in tool_calls if tc.name == "finish"]
+                if finish_calls:
+                    if len(tool_calls) > 1:
+                        logger.warning("finish tool called alongside other tools - only finish will be executed")
+                        tool_calls = finish_calls
+                    # Execute only finish and break
+                    observations = self._execute_tools_parallel(tool_calls)
+                    formatted_observations = []
+                    for tool_call, observation in zip(tool_calls, observations, strict=True):
+                        formatted_observations.append({
+                            "tool": tool_call.name,
+                            "result": observation
+                        })
+                    trajectory[f"observations_{idx}"] = formatted_observations
+                    break
+
+                # Execute tools in parallel
                 observations = self._execute_tools_parallel(tool_calls)
+
+                # Store observations as a structured format that includes tool names
+                # This makes it easier for the LLM to understand which observation corresponds to which tool
                 formatted_observations = []
                 for tool_call, observation in zip(tool_calls, observations, strict=True):
                     formatted_observations.append({
@@ -160,20 +181,26 @@ class ReAct(Module):
                         "result": observation
                     })
                 trajectory[f"observations_{idx}"] = formatted_observations
-                break
+            else:
+                # Sequential mode: use original signature format
+                trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+                trajectory[f"tool_args_{idx}"] = pred.next_tool_args
 
-            # Execute tools in parallel
-            observations = self._execute_tools_parallel(tool_calls)
+                # Check if the tool is "finish"
+                if pred.next_tool_name == "finish":
+                    try:
+                        observation = self.tools[pred.next_tool_name](**pred.next_tool_args)
+                    except Exception as err:
+                        observation = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                    trajectory[f"observation_{idx}"] = observation
+                    break
 
-            # Store observations as a structured format that includes tool names
-            # This makes it easier for the LLM to understand which observation corresponds to which tool
-            formatted_observations = []
-            for tool_call, observation in zip(tool_calls, observations, strict=True):
-                formatted_observations.append({
-                    "tool": tool_call.name,
-                    "result": observation
-                })
-            trajectory[f"observations_{idx}"] = formatted_observations
+                # Execute the single tool
+                try:
+                    observation = self.tools[pred.next_tool_name](**pred.next_tool_args)
+                except Exception as err:
+                    observation = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                trajectory[f"observation_{idx}"] = observation
 
         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
         return dspy.Prediction(trajectory=trajectory, **extract)
@@ -190,20 +217,36 @@ class ReAct(Module):
 
             trajectory[f"thought_{idx}"] = pred.next_thought
 
-            # Get list of ToolCall objects from ToolCalls
-            tool_calls = pred.next_tool_calls.tool_calls
+            # Handle different signature formats based on parallel_tool_calls
+            if self.parallel_tool_calls:
+                # Get list of ToolCall objects from ToolCalls
+                tool_calls = pred.next_tool_calls.tool_calls
 
-            # Store tool calls as dicts for trajectory (for serialization/logging)
-            trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
+                # Store tool calls as dicts for trajectory (for serialization/logging)
+                trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
 
-            # Check if "finish" is in the tool calls (should be the only tool call)
-            finish_calls = [tc for tc in tool_calls if tc.name == "finish"]
-            if finish_calls:
-                if len(tool_calls) > 1:
-                    logger.warning("finish tool called alongside other tools - only finish will be executed")
-                    tool_calls = finish_calls
-                # Execute only finish and break
+                # Check if "finish" is in the tool calls (should be the only tool call)
+                finish_calls = [tc for tc in tool_calls if tc.name == "finish"]
+                if finish_calls:
+                    if len(tool_calls) > 1:
+                        logger.warning("finish tool called alongside other tools - only finish will be executed")
+                        tool_calls = finish_calls
+                    # Execute only finish and break
+                    observations = await self._execute_tools_parallel_async(tool_calls)
+                    formatted_observations = []
+                    for tool_call, observation in zip(tool_calls, observations, strict=True):
+                        formatted_observations.append({
+                            "tool": tool_call.name,
+                            "result": observation
+                        })
+                    trajectory[f"observations_{idx}"] = formatted_observations
+                    break
+
+                # Execute tools in parallel
                 observations = await self._execute_tools_parallel_async(tool_calls)
+
+                # Store observations as a structured format that includes tool names
+                # This makes it easier for the LLM to understand which observation corresponds to which tool
                 formatted_observations = []
                 for tool_call, observation in zip(tool_calls, observations, strict=True):
                     formatted_observations.append({
@@ -211,20 +254,26 @@ class ReAct(Module):
                         "result": observation
                     })
                 trajectory[f"observations_{idx}"] = formatted_observations
-                break
+            else:
+                # Sequential mode: use original signature format
+                trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+                trajectory[f"tool_args_{idx}"] = pred.next_tool_args
 
-            # Execute tools in parallel
-            observations = await self._execute_tools_parallel_async(tool_calls)
+                # Check if the tool is "finish"
+                if pred.next_tool_name == "finish":
+                    try:
+                        observation = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
+                    except Exception as err:
+                        observation = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                    trajectory[f"observation_{idx}"] = observation
+                    break
 
-            # Store observations as a structured format that includes tool names
-            # This makes it easier for the LLM to understand which observation corresponds to which tool
-            formatted_observations = []
-            for tool_call, observation in zip(tool_calls, observations, strict=True):
-                formatted_observations.append({
-                    "tool": tool_call.name,
-                    "result": observation
-                })
-            trajectory[f"observations_{idx}"] = formatted_observations
+                # Execute the single tool
+                try:
+                    observation = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
+                except Exception as err:
+                    observation = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+                trajectory[f"observation_{idx}"] = observation
 
         extract = await self._async_call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
         return dspy.Prediction(trajectory=trajectory, **extract)
@@ -326,14 +375,19 @@ class ReAct(Module):
         Users can override this method to implement their own truncation logic.
         """
         keys = list(trajectory.keys())
-        if len(keys) < 3:
-            # Every iteration has 3 keys: thought, tool_calls, and observations.
+
+        # Determine keys per iteration based on mode
+        keys_per_iteration = 3 if self.parallel_tool_calls else 4
+
+        if len(keys) < keys_per_iteration:
+            # Every iteration has either 3 keys (parallel: thought, tool_calls, observations)
+            # or 4 keys (sequential: thought, tool_name, tool_args, observation)
             raise ValueError(
                 "The trajectory is too long so your prompt exceeded the context window, but the trajectory cannot be "
                 "truncated because it only has one iteration."
             )
 
-        for key in keys[:3]:
+        for key in keys[:keys_per_iteration]:
             trajectory.pop(key)
 
         return trajectory
