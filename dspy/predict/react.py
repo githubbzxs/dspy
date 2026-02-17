@@ -110,8 +110,8 @@ class ReAct(Module):
 
             trajectory[f"thought_{idx}"] = pred.next_thought
 
-            # Parse tool calls - get list of ToolCall objects
-            tool_calls = self._parse_tool_calls(pred.next_tool_calls)
+            # Get list of ToolCall objects from ToolCalls
+            tool_calls = pred.next_tool_calls.tool_calls
 
             # Store tool calls as dicts for trajectory (for serialization/logging)
             trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
@@ -161,8 +161,8 @@ class ReAct(Module):
 
             trajectory[f"thought_{idx}"] = pred.next_thought
 
-            # Parse tool calls - get list of ToolCall objects
-            tool_calls = self._parse_tool_calls(pred.next_tool_calls)
+            # Get list of ToolCall objects from ToolCalls
+            tool_calls = pred.next_tool_calls.tool_calls
 
             # Store tool calls as dicts for trajectory (for serialization/logging)
             trajectory[f"tool_calls_{idx}"] = [{"name": tc.name, "args": tc.args} for tc in tool_calls]
@@ -199,24 +199,6 @@ class ReAct(Module):
 
         extract = await self._async_call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
         return dspy.Prediction(trajectory=trajectory, **extract)
-
-    def _parse_tool_calls(self, tool_calls_data):
-        """Parse tool calls from the prediction output.
-
-        Args:
-            tool_calls_data: ToolCalls object from the adapter
-
-        Returns:
-            List of ToolCall objects
-        """
-        # The adapter should always return a ToolCalls object
-        if not isinstance(tool_calls_data, ToolCalls):
-            raise ValueError(
-                f"Expected ToolCalls object from adapter, got {type(tool_calls_data)}. "
-                "This indicates an issue with the adapter output."
-            )
-
-        return tool_calls_data.tool_calls
 
     def _execute_tools_parallel(self, tool_calls: list) -> list[Any]:
         """Execute multiple tools in parallel using ParallelExecutor.
