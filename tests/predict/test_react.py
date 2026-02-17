@@ -406,7 +406,7 @@ def test_parallel_tool_execution_sync():
         execution_log.append(("tool2_end", y))
         return y * 3
 
-    react = dspy.ReAct("input -> output", tools=[tool1, tool2])
+    react = dspy.ReAct("input -> output", tools=[tool1, tool2], parallel_tool_calls=True)
 
     lm = DummyLM(
         [
@@ -511,7 +511,7 @@ def test_parallel_tool_execution_with_error():
     def bad_tool(y: int) -> int:
         raise ValueError("Tool error")
 
-    react = dspy.ReAct("input -> output", tools=[good_tool, bad_tool])
+    react = dspy.ReAct("input -> output", tools=[good_tool, bad_tool], parallel_tool_calls=True)
 
     lm = DummyLM(
         [
@@ -560,7 +560,7 @@ async def test_parallel_tool_execution_async():
         execution_log.append(("tool2_end", y))
         return y * 3
 
-    react = dspy.ReAct("input -> output", tools=[async_tool1, async_tool2])
+    react = dspy.ReAct("input -> output", tools=[async_tool1, async_tool2], parallel_tool_calls=True)
 
     lm = DummyLM(
         [
@@ -621,7 +621,7 @@ async def test_parallel_async_tool_with_error():
         await asyncio.sleep(0.05)
         raise ValueError("Async tool error")
 
-    react = dspy.ReAct("input -> output", tools=[good_async_tool, bad_async_tool])
+    react = dspy.ReAct("input -> output", tools=[good_async_tool, bad_async_tool], parallel_tool_calls=True)
 
     lm = DummyLM(
         [
@@ -661,7 +661,7 @@ def test_multiple_iterations_with_parallel_tools():
     def tool_b(y: int) -> str:
         return f"b:{y}"
 
-    react = dspy.ReAct("input -> output", tools=[tool_a, tool_b])
+    react = dspy.ReAct("input -> output", tools=[tool_a, tool_b], parallel_tool_calls=True)
 
     lm = DummyLM(
         [
@@ -725,7 +725,7 @@ def test_empty_tool_args():
     def get_date() -> str:
         return "2024-01-01"
 
-    react = dspy.ReAct("query -> result", tools=[get_time, get_date])
+    react = dspy.ReAct("query -> result", tools=[get_time, get_date], parallel_tool_calls=True)
 
     lm = DummyLM(
         [

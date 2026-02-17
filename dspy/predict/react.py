@@ -17,7 +17,13 @@ if TYPE_CHECKING:
 
 
 class ReAct(Module):
-    def __init__(self, signature: type["Signature"], tools: list[Callable], max_iters: int = 10):
+    def __init__(
+        self,
+        signature: type["Signature"],
+        tools: list[Callable],
+        max_iters: int = 10,
+        parallel_tool_calls: bool = False,
+    ):
         """
         ReAct stands for "Reasoning and Acting," a popular paradigm for building tool-using agents.
         In this approach, the language model is iteratively provided with a list of tools and has
@@ -29,6 +35,9 @@ class ReAct(Module):
             signature: The signature of the module, which defines the input and output of the react module.
             tools (list[Callable]): A list of functions, callable objects, or `dspy.Tool` instances.
             max_iters (Optional[int]): The maximum number of iterations to run. Defaults to 10.
+            parallel_tool_calls (Optional[bool]): Whether to enable parallel tool execution. Defaults to False.
+                When True, allows the LLM to request multiple tool calls in a single turn that execute concurrently.
+                When False, maintains sequential execution (one tool per turn).
 
         Example:
 
@@ -43,6 +52,7 @@ class ReAct(Module):
         super().__init__()
         self.signature = signature = ensure_signature(signature)
         self.max_iters = max_iters
+        self.parallel_tool_calls = parallel_tool_calls
 
         tools = [t if isinstance(t, Tool) else Tool(t) for t in tools]
         tools = {tool.name: tool for tool in tools}
@@ -51,17 +61,29 @@ class ReAct(Module):
         outputs = ", ".join([f"`{k}`" for k in signature.output_fields.keys()])
         instr = [f"{signature.instructions}\n"] if signature.instructions else []
 
-        instr.extend(
-            [
-                f"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.",
-                f"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\n",
-                "To do this, you will interleave next_thought and next_tool_calls in each turn, and also when finishing the task.",
-                "You can call multiple tools in parallel by providing multiple tool calls in next_tool_calls.",
-                "After each set of tool calls, you receive resulting observations, which get appended to your trajectory.\n",
-                "When writing next_thought, you may reason about the current situation and plan for future steps.",
-                "When selecting next_tool_calls, each tool must be one of:\n",
-            ]
-        )
+        if parallel_tool_calls:
+            instr.extend(
+                [
+                    f"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.",
+                    f"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\n",
+                    "To do this, you will interleave next_thought and next_tool_calls in each turn, and also when finishing the task.",
+                    "You can call multiple tools in parallel by providing multiple tool calls in next_tool_calls.",
+                    "After each set of tool calls, you receive resulting observations, which get appended to your trajectory.\n",
+                    "When writing next_thought, you may reason about the current situation and plan for future steps.",
+                    "When selecting next_tool_calls, each tool must be one of:\n",
+                ]
+            )
+        else:
+            instr.extend(
+                [
+                    f"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.",
+                    f"Your goal is to use one of the supplied tools to collect any necessary information for producing {outputs}.\n",
+                    "To do this, you will interleave next_thought and next_tool_calls in each turn, and also when finishing the task.",
+                    "After each tool call, you receive a resulting observation, which gets appended to your trajectory.\n",
+                    "When writing next_thought, you may reason about the current situation and plan for future steps.",
+                    "When selecting next_tool_calls, each tool must be one of:\n",
+                ]
+            )
 
         tools["finish"] = Tool(
             func=lambda: "Completed.",
@@ -72,10 +94,17 @@ class ReAct(Module):
 
         for idx, tool in enumerate(tools.values()):
             instr.append(f"({idx + 1}) {tool}")
-        instr.append(
-            "When providing `next_tool_calls`, provide a list of tool calls. Each tool call should be a dictionary with 'name' and 'args' keys. "
-            "The 'name' must be one of the tool names listed above, and 'args' must be a dictionary in JSON format containing the arguments for that tool."
-        )
+
+        if parallel_tool_calls:
+            instr.append(
+                "When providing `next_tool_calls`, provide a list of tool calls. Each tool call should be a dictionary with 'name' and 'args' keys. "
+                "The 'name' must be one of the tool names listed above, and 'args' must be a dictionary in JSON format containing the arguments for that tool."
+            )
+        else:
+            instr.append(
+                "When providing `next_tool_calls`, provide a list with a single tool call. The tool call should be a dictionary with 'name' and 'args' keys. "
+                "The 'name' must be one of the tool names listed above, and 'args' must be a dictionary in JSON format containing the arguments for that tool."
+            )
 
         react_signature = (
             dspy.Signature({**signature.input_fields}, "\n".join(instr))
@@ -201,7 +230,7 @@ class ReAct(Module):
         return dspy.Prediction(trajectory=trajectory, **extract)
 
     def _execute_tools_parallel(self, tool_calls: list) -> list[Any]:
-        """Execute multiple tools in parallel using ParallelExecutor.
+        """Execute tools using ToolCall.execute() method.
 
         Args:
             tool_calls: List of ToolCall objects
@@ -209,10 +238,15 @@ class ReAct(Module):
         Returns:
             List of observations in the same order as tool_calls
         """
+        # If parallel execution is disabled, only execute the first tool call
+        if not self.parallel_tool_calls and len(tool_calls) > 1:
+            logger.warning(f"parallel_tool_calls is disabled but {len(tool_calls)} tools were requested - executing only the first one")
+            tool_calls = tool_calls[:1]
+
         # If there's only one tool call, execute directly without parallel overhead
         if len(tool_calls) == 1:
             try:
-                return [self.tools[tool_calls[0].name](**tool_calls[0].args)]
+                return [tool_calls[0].execute(self.tools)]
             except Exception as err:
                 return [f"Execution error in {tool_calls[0].name}: {_fmt_exc(err)}"]
 
@@ -220,12 +254,10 @@ class ReAct(Module):
         executor = ParallelExecutor(num_threads=len(tool_calls), disable_progress_bar=True)
 
         def execute_single_tool(tool_call) -> Any:
-            tool_name = tool_call.name
-            tool_args = tool_call.args
             try:
-                return self.tools[tool_name](**tool_args)
+                return tool_call.execute(self.tools)
             except Exception as err:
-                return f"Execution error in {tool_name}: {_fmt_exc(err)}"
+                return f"Execution error in {tool_call.name}: {_fmt_exc(err)}"
 
         # Execute tools in parallel - ParallelExecutor handles context propagation
         observations = executor.execute(execute_single_tool, tool_calls)
@@ -233,7 +265,7 @@ class ReAct(Module):
         return observations
 
     async def _execute_tools_parallel_async(self, tool_calls: list) -> list[Any]:
-        """Execute multiple tools in parallel using asyncio.gather.
+        """Execute tools asynchronously using Tool.acall() method.
 
         Args:
             tool_calls: List of ToolCall objects
@@ -241,20 +273,25 @@ class ReAct(Module):
         Returns:
             List of observations in the same order as tool_calls
         """
+        # If parallel execution is disabled, only execute the first tool call
+        if not self.parallel_tool_calls and len(tool_calls) > 1:
+            logger.warning(f"parallel_tool_calls is disabled but {len(tool_calls)} tools were requested - executing only the first one")
+            tool_calls = tool_calls[:1]
+
         # If there's only one tool call, execute directly without gather overhead
         if len(tool_calls) == 1:
             try:
-                return [await self.tools[tool_calls[0].name].acall(**tool_calls[0].args)]
+                tool = self.tools[tool_calls[0].name]
+                return [await tool.acall(**tool_calls[0].args)]
             except Exception as err:
                 return [f"Execution error in {tool_calls[0].name}: {_fmt_exc(err)}"]
 
         async def execute_single_tool(tool_call) -> Any:
-            tool_name = tool_call.name
-            tool_args = tool_call.args
             try:
-                return await self.tools[tool_name].acall(**tool_args)
+                tool = self.tools[tool_call.name]
+                return await tool.acall(**tool_call.args)
             except Exception as err:
-                return f"Execution error in {tool_name}: {_fmt_exc(err)}"
+                return f"Execution error in {tool_call.name}: {_fmt_exc(err)}"
 
         # Execute tools in parallel using asyncio.gather
         observations = await asyncio.gather(*[execute_single_tool(tc) for tc in tool_calls])
