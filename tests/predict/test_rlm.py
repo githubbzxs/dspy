@@ -11,7 +11,7 @@ from contextlib import contextmanager
 import pytest
 
 from dspy.adapters.types.tool import Tool
-from dspy.predict.rlm import RLM
+from dspy.predict.rlm import RLM, _strip_code_fences
 from dspy.primitives.code_interpreter import CodeInterpreterError, FinalOutput
 from dspy.primitives.prediction import Prediction
 from dspy.primitives.python_interpreter import PythonInterpreter
@@ -268,6 +268,36 @@ class TestRLMInitialization:
             tools["llm_query"](prompt="one more")
 
 
+class TestRLMCodeFenceParsing:
+    """Tests for robust fenced-code extraction."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("```python\nprint(1)\n```", "print(1)"),
+            ("```py\nx = 1\nprint(x)\n```", "x = 1\nprint(x)"),
+            ("```python\nprint('inline')```", "print('inline')"),
+            ("not fenced code", "not fenced code"),
+        ],
+    )
+    def test_strip_code_fences_valid(self, raw, expected):
+        assert _strip_code_fences(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "```\nprint('no lang')\n```",
+            "I'll inspect first.\n```python\nprint('hello')\n```\nThen I will submit.",
+            "```json\n{\"a\": 1}\n```\n```python\nprint('use me')\n```",
+            "```json\n{\"a\": 1}\n```",
+            "```python\nprint('oops')",
+        ],
+    )
+    def test_strip_code_fences_invalid(self, raw):
+        with pytest.raises(SyntaxError):
+            _strip_code_fences(raw)
+
+
 class TestRLMFormatting:
     """Tests for RLM formatting helpers."""
 
@@ -408,6 +438,13 @@ class TestREPLTypes:
         # Formatting should truncate at 50 chars
         formatted = h2.format()
         assert "50 characters omitted" in formatted
+
+    def test_repl_entry_format_avoids_double_fencing(self):
+        """Test that already-fenced code is not wrapped in an extra fence."""
+        entry = REPLEntry(code="```python\nprint(1)\n```", output="1")
+        formatted = entry.format(index=0)
+        assert "Code:\n```python\nprint(1)\n```\nOutput" in formatted
+        assert "```\n```\nOutput" not in formatted
 
     def test_repl_variable_from_value(self):
         """Test REPLVariable.from_value() factory."""

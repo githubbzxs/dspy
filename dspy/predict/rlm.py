@@ -11,7 +11,6 @@ Reference: "Recursive Language Models" (Zhang, Kraska, Khattab, 2025)
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -62,16 +61,41 @@ IMPORTANT: This is ITERATIVE. Each code block you write will execute, you'll see
 
 You have max {max_llm_calls} sub-LLM calls. When done, call SUBMIT() with your output."""
 
-# Pattern to match markdown code fences: ```python\n...\n``` or ```\n...\n```
-_CODE_FENCE_PATTERN = re.compile(r"^```(?:python|py)?\s*\n(.*)\n```\s*$", re.DOTALL)
+_PYTHON_FENCE_LANGS = {"python", "py", "python3", "py3"}
 
 
 def _strip_code_fences(code: str) -> str:
     code = code.strip()
-    match = _CODE_FENCE_PATTERN.match(code)
-    if match:
-        return match.group(1)
-    return code
+    if "```" not in code:
+        return code
+    if not code.startswith("```"):
+        raise SyntaxError(
+            "Expected code in a Python markdown fence (```python ... ```), "
+            "or plain Python code with no markdown fences"
+        )
+
+    lang_line_end = code.find("\n", 3)
+    if lang_line_end == -1:
+        raise SyntaxError("Invalid fenced code block: missing newline after opening fence")
+
+    lang_line = code[3:lang_line_end].strip()
+    lang = (lang_line.split()[0] if lang_line else "").lower()
+    if lang not in _PYTHON_FENCE_LANGS:
+        shown_lang = lang if lang else "<none>"
+        raise SyntaxError(
+            "Expected a Python-labeled code fence (```python ... ```), "
+            f"but found: {shown_lang}"
+        )
+
+    block_end = code.rfind("```")
+    if block_end <= lang_line_end:
+        raise SyntaxError("Invalid fenced code block: missing closing ```")
+
+    trailing = code[block_end + 3:]
+    if trailing.strip():
+        raise SyntaxError("Invalid fenced code block: extra text after closing fence")
+
+    return code[lang_line_end + 1:block_end].strip()
 
 
 @experimental
