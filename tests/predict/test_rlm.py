@@ -291,7 +291,7 @@ class TestRLMCodeFenceParsing:
             "I'll inspect first.\n```python\nprint('hello')\n```\nThen I will submit.",
             "```json\n{\"a\": 1}\n```\n```python\nprint('use me')\n```",
             "```python\nprint(1)\n```\n```python\nprint(2)\n```",
-            "```json\n{\"a\": 1}\n```",
+            '```json\n{"a": 1}\n```',
             "```python\nprint('oops')",
         ],
     )
