@@ -289,6 +289,7 @@ class TestRLMCodeFenceParsing:
             "```\nprint('no lang')\n```",
             "I'll inspect first.\n```python\nprint('hello')\n```\nThen I will submit.",
             "```json\n{\"a\": 1}\n```\n```python\nprint('use me')\n```",
+            "```python\nprint(1)\n```\n```python\nprint(2)\n```",
             "```json\n{\"a\": 1}\n```",
             "```python\nprint('oops')",
         ],
@@ -587,6 +588,22 @@ class TestRLMToolExceptions:
         assert result.answer == "recovered"
         first_step = result.trajectory[0]
         assert first_step["code"] == "print(x)"
+
+    def test_syntax_error_from_execute_is_recoverable(self):
+        """SyntaxError from interpreter.execute should be surfaced as an iteration error."""
+        mock = MockInterpreter(responses=[
+            SyntaxError("invalid syntax"),
+            FinalOutput({"answer": "recovered"}),
+        ])
+        rlm = RLM("query -> answer", max_iterations=5, interpreter=mock)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Bad code", "code": "```python\ndef incomplete(\n```"},
+            {"reasoning": "Recover", "code": 'SUBMIT("recovered")'},
+        ])
+
+        result = rlm.forward(query="test")
+        assert result.answer == "recovered"
+        assert result.trajectory[0]["output"].startswith("[Error] invalid syntax")
 
 
 class TestRLMDynamicSignature:

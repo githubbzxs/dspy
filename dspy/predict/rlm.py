@@ -87,7 +87,7 @@ def _strip_code_fences(code: str) -> str:
             f"but found: {shown_lang}"
         )
 
-    block_end = code.rfind("```")
+    block_end = code.find("```", lang_line_end + 1)
     if block_end <= lang_line_end:
         raise SyntaxError("Invalid fenced code block: missing closing ```")
 
@@ -541,7 +541,7 @@ class RLM(Module):
         try:
             result = repl.execute(code_for_history, variables=dict(input_args))
             return code_for_history, result
-        except CodeInterpreterError as e:
+        except (CodeInterpreterError, SyntaxError) as e:
             return code_for_history, f"[Error] {e}"
 
     def _execute_iteration(
