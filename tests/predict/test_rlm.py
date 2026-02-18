@@ -571,6 +571,23 @@ class TestRLMToolExceptions:
         result = rlm.forward(query="test")
         assert result.answer == "recovered"
 
+    def test_runtime_error_history_uses_stripped_code(self):
+        """Runtime execution failures should preserve stripped code in history."""
+        mock = MockInterpreter(responses=[
+            CodeInterpreterError("NameError: name 'x' is not defined"),
+            FinalOutput({"answer": "recovered"}),
+        ])
+        rlm = RLM("query -> answer", max_iterations=5, interpreter=mock)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Will fail", "code": "```python\nprint(x)\n```"},
+            {"reasoning": "Recover", "code": 'SUBMIT("recovered")'},
+        ])
+
+        result = rlm.forward(query="test")
+        assert result.answer == "recovered"
+        first_step = result.trajectory[0]
+        assert first_step["code"] == "print(x)"
+
 
 class TestRLMDynamicSignature:
     """Tests for the dynamically built RLM signatures."""

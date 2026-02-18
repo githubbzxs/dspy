@@ -534,11 +534,15 @@ class RLM(Module):
     ) -> tuple[str, Any]:
         """Execute one code block and return (code_for_history, result)."""
         try:
-            stripped_code = _strip_code_fences(code)
-            result = repl.execute(stripped_code, variables=dict(input_args))
-            return stripped_code, result
-        except (CodeInterpreterError, SyntaxError) as e:
+            code_for_history = _strip_code_fences(code)
+        except SyntaxError as e:
             return code, f"[Error] {e}"
+
+        try:
+            result = repl.execute(code_for_history, variables=dict(input_args))
+            return code_for_history, result
+        except CodeInterpreterError as e:
+            return code_for_history, f"[Error] {e}"
 
     def _execute_iteration(
         self,
