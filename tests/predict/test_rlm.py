@@ -277,6 +277,7 @@ class TestRLMCodeFenceParsing:
             ("```python\nprint(1)\n```", "print(1)"),
             ("```py\nx = 1\nprint(x)\n```", "x = 1\nprint(x)"),
             ("```python\nprint('inline')```", "print('inline')"),
+            ('```python\ntext = "```"\nprint(text)\n```', 'text = "```"\nprint(text)'),
             ("not fenced code", "not fenced code"),
         ],
     )

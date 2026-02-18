@@ -87,15 +87,21 @@ def _strip_code_fences(code: str) -> str:
             f"but found: {shown_lang}"
         )
 
-    block_end = code.find("```", lang_line_end + 1)
+    block_end = code.rfind("```")
     if block_end <= lang_line_end:
         raise SyntaxError("Invalid fenced code block: missing closing ```")
+
+    body = code[lang_line_end + 1:block_end]
+    # Reject nested/extra markdown fence markers (e.g., multiple fenced blocks).
+    for line in body.splitlines():
+        if line.strip().startswith("```"):
+            raise SyntaxError("Invalid fenced code block: multiple fenced blocks are not supported")
 
     trailing = code[block_end + 3:]
     if trailing.strip():
         raise SyntaxError("Invalid fenced code block: extra text after closing fence")
 
-    return code[lang_line_end + 1:block_end].strip()
+    return body.strip()
 
 
 @experimental
