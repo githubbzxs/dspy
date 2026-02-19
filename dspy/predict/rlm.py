@@ -68,18 +68,19 @@ def _strip_code_fences(code: str) -> str:
     code = code.strip()
     if "```" not in code:
         return code
+
     if not code.startswith("```"):
         raise SyntaxError(
             "Expected code in a Python markdown fence (```python ... ```), "
             "or plain Python code with no markdown fences"
         )
 
-    lang_line_end = code.find("\n", 3)
-    if lang_line_end == -1:
+    lang_line, separator, remainder = code[3:].partition("\n")
+    if not separator:
         raise SyntaxError("Invalid fenced code block: missing newline after opening fence")
 
-    lang_line = code[3:lang_line_end].strip()
-    lang = (lang_line.split()[0] if lang_line else "").lower()
+    lang_header = lang_line.strip()
+    lang = (lang_header.split(maxsplit=1)[0] if lang_header else "").lower()
     if lang not in _PYTHON_FENCE_LANGS:
         shown_lang = lang if lang else "<none>"
         raise SyntaxError(
@@ -87,19 +88,17 @@ def _strip_code_fences(code: str) -> str:
             f"but found: {shown_lang}"
         )
 
-    block_end = code.rfind("```")
-    if block_end <= lang_line_end:
+    block_end = remainder.rfind("```")
+    if block_end == -1:
         raise SyntaxError("Invalid fenced code block: missing closing ```")
 
-    body = code[lang_line_end + 1:block_end]
-    # Reject nested/extra markdown fence markers (e.g., multiple fenced blocks).
-    for line in body.splitlines():
-        if line.strip().startswith("```"):
-            raise SyntaxError("Invalid fenced code block: multiple fenced blocks are not supported")
-
-    trailing = code[block_end + 3:]
+    body = remainder[:block_end]
+    trailing = remainder[block_end + 3:]
     if trailing.strip():
         raise SyntaxError("Invalid fenced code block: extra text after closing fence")
+
+    if any(line.strip().startswith("```") for line in body.splitlines()):
+        raise SyntaxError("Invalid fenced code block: multiple fenced blocks are not supported")
 
     return body.strip()
 

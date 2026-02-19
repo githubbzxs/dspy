@@ -118,16 +118,10 @@ class REPLEntry(pydantic.BaseModel):
             output = output[:half] + f"\n\n... ({omitted:,} characters omitted) ...\n\n" + output[-half:]
         return f"Output ({raw_len:,} chars):\n{output}"
 
-    def _format_code(self) -> str:
-        code = self.code.strip()
-        if code.startswith("```") and code.endswith("```"):
-            return code
-        return f"```python\n{self.code}\n```"
-
     def format(self, index: int, max_output_chars: int = 10_000) -> str:
         """Format this entry for inclusion in prompts."""
         reasoning_line = f"Reasoning: {self.reasoning}\n" if self.reasoning else ""
-        code_block = self._format_code()
+        code_block = f"```python\n{self.code}\n```"
         return f"=== Step {index + 1} ===\n{reasoning_line}Code:\n{code_block}\n{self.format_output(self.output, max_output_chars)}"
 
 

@@ -441,13 +441,6 @@ class TestREPLTypes:
         formatted = h2.format()
         assert "50 characters omitted" in formatted
 
-    def test_repl_entry_format_avoids_double_fencing(self):
-        """Test that already-fenced code is not wrapped in an extra fence."""
-        entry = REPLEntry(code="```python\nprint(1)\n```", output="1")
-        formatted = entry.format(index=0)
-        assert "Code:\n```python\nprint(1)\n```\nOutput" in formatted
-        assert "```\n```\nOutput" not in formatted
-
     def test_repl_variable_from_value(self):
         """Test REPLVariable.from_value() factory."""
         var = REPLVariable.from_value("test", "hello world")
