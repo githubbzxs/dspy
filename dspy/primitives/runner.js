@@ -58,6 +58,8 @@ const makeSchemaAssignment = (identifier, schemaMap) => {
   return `${identifier}.__json_schema__ = json.loads(${JSON.stringify(schemaJson)})`;
 };
 
+const TOOL_BRIDGE_ERROR_KEY = "__dspy_tool_bridge_error__";
+
 const makeToolWrapper = (toolName, parameters = []) => {
   const schemaByName = {};
   for (const p of parameters) {
@@ -80,26 +82,17 @@ const makeToolWrapper = (toolName, parameters = []) => {
   });
   const signature = sigParts.join(', ');
   const argNames = parameters.map(p => p.name);
-
-  // If no parameters, fall back to *args, **kwargs for flexibility
-  if (parameters.length === 0) {
-    return `
-import json
-from pyodide.ffi import run_sync, JsProxy
-def ${toolName}(*args, **kwargs):
-    result = run_sync(_js_tool_call("${toolName}", json.dumps({"args": args, "kwargs": kwargs})))
-    return result.to_py() if isinstance(result, JsProxy) else result
-${schemaAssignment}
-`;
-  }
+  const kwargParts = argNames.map(n => `"${n}": ${n}`).join(', ');
 
   return `
 import json
 from pyodide.ffi import run_sync, JsProxy
 def ${toolName}(${signature}):
-    _args = [${argNames.join(', ')}]
-    result = run_sync(_js_tool_call("${toolName}", json.dumps({"args": _args, "kwargs": {}})))
-    return result.to_py() if isinstance(result, JsProxy) else result
+    result = run_sync(_js_tool_call("${toolName}", json.dumps({"kwargs": {${kwargParts}}})))
+    parsed = result.to_py() if isinstance(result, JsProxy) else result
+    if isinstance(parsed, dict) and parsed.get("${TOOL_BRIDGE_ERROR_KEY}"):
+        raise RuntimeError(parsed.get("message", "Tool bridge error"))
+    return parsed
 ${schemaAssignment}
 `;
 };
@@ -224,11 +217,19 @@ async function toolCallBridge(name, argsJson) {
 
     // Expect JSON-RPC result or error with matching id
     if (response.id !== requestId) {
-      throw new Error(`Unexpected response: expected id ${requestId}, got ${response.id}`);
+      return {
+        [TOOL_BRIDGE_ERROR_KEY]: true,
+        message: `Tool bridge error for '${name}': Unexpected response: expected id ${requestId}, got ${response.id}`
+      };
     }
 
     if (response.error) {
-      throw new Error(response.error.message || "Tool call failed");
+      const errorType = response.error.data?.type || "ToolError";
+      const errorMessage = response.error.message || "Tool call failed";
+      return {
+        [TOOL_BRIDGE_ERROR_KEY]: true,
+        message: `${errorType}: ${errorMessage}`
+      };
     }
 
     // Deserialize result based on type
@@ -238,8 +239,12 @@ async function toolCallBridge(name, argsJson) {
     }
     return result.value;
   } catch (error) {
-    // Re-throw with context so Python can catch it properly
-    throw new Error(`Tool bridge error for '${name}': ${error.message}`);
+    // Return a structured error payload so Python can raise with full context
+    // without triggering a top-level unhandled rejection in Deno.
+    return {
+      [TOOL_BRIDGE_ERROR_KEY]: true,
+      message: `Tool bridge error for '${name}': ${error.message}`
+    };
   }
 }
 

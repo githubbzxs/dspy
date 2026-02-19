@@ -1057,6 +1057,26 @@ class TestRLMWithDummyLM:
 
             assert result.total == 15
 
+    def test_with_pydantic_input_model_e2e(self):
+        """Test RLM with a pydantic input model instance passed to sandbox."""
+        import dspy
+
+        class Person(pydantic.BaseModel):
+            name: str
+            age: int
+
+        class PersonSig(dspy.Signature):
+            person: Person = dspy.InputField()
+            next_age: int = dspy.OutputField()
+
+        with dummy_lm_context([
+            {"reasoning": "Increment person age", "code": "SUBMIT(person['age'] + 1)"},
+        ]):
+            rlm = RLM(PersonSig, max_iterations=3)
+            result = rlm.forward(person=Person(name="Ada", age=36))
+
+            assert result.next_age == 37
+
     def test_with_tool_e2e(self):
         """Test RLM calling a host-side tool through the sandbox."""
         def lookup(key: str) -> str:

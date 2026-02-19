@@ -10,6 +10,11 @@ from dspy.primitives.python_interpreter import PythonInterpreter
 pytestmark = pytest.mark.deno
 
 
+class ForwardRefProfile(pydantic.BaseModel):
+    name: str
+    age: int
+
+
 def test_execute_simple_code():
     with PythonInterpreter() as interpreter:
         code = "print('Hello, World!')"
@@ -313,6 +318,50 @@ def test_tool_pydantic_arg_parsing():
         assert result == "hello Ada (36)"
 
 
+def test_tool_pydantic_arg_parsing_with_forward_ref_annotation():
+    """Test pydantic parsing works for resolvable forward-ref string annotations."""
+
+    def greet(profile: "ForwardRefProfile") -> str:
+        return f"hello {profile.name} ({profile.age})"
+
+    with PythonInterpreter(tools={"greet": greet}) as sandbox:
+        result = sandbox.execute('greet(profile={"name": "Ada", "age": "36"})')
+        assert result == "hello Ada (36)"
+
+
+def test_tool_pydantic_arg_parsing_with_local_forward_ref_annotation_raises():
+    """Local forward-ref string annotations should fail with a clear error."""
+
+    class LocalProfile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: "LocalProfile") -> str:
+        return f"hello {profile.name} ({profile.age})"
+
+    sandbox = PythonInterpreter()
+    with pytest.raises(TypeError, match=r"Forward-ref strings are not supported"):
+        sandbox._build_tool_info(greet)
+
+
+def test_tool_pydantic_invalid_input_surfaces_validation_details():
+    """Test invalid pydantic input keeps validation details in the surfaced error."""
+
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def greet(profile: Profile) -> str:
+        return f"hello {profile.name} ({profile.age})"
+
+    with PythonInterpreter(tools={"greet": greet}) as sandbox:
+        with pytest.raises(CodeInterpreterError) as exc_info:
+            sandbox.execute('greet(profile={"name": "Ada", "age": "not-an-int"})')
+        message = str(exc_info.value)
+        assert "validationerror" in message.lower()
+        assert "age" in message.lower()
+
+
 # =============================================================================
 # Multi-Output SUBMIT Tests
 # =============================================================================
@@ -383,29 +432,45 @@ def test_submit_wrong_arg_count():
         assert "missing 1 required positional argument" in str(exc_info.value)
 
 
-def test_extract_parameters():
-    """Test that _extract_parameters correctly extracts function signatures."""
+def test_build_tool_info():
+    """Test that _build_tool_info correctly extracts function signatures."""
 
     def example_fn(required: str, optional: int = 5, untyped=None) -> str:
         pass
 
     sandbox = PythonInterpreter()
-    params = sandbox._extract_parameters(example_fn)
+    params, adapters = sandbox._build_tool_info(example_fn)
 
     assert len(params) == 3
     assert params[0] == {"name": "required", "type": "str"}
     assert params[1] == {"name": "optional", "type": "int", "default": 5}
     assert params[2] == {"name": "untyped", "default": None}
+    assert adapters == {}
 
 
-def test_extract_parameters_complex_types():
-    """Test that _extract_parameters handles complex types gracefully."""
+@pytest.mark.parametrize(
+    "fn_factory",
+    [
+        lambda: (lambda *values: None),
+        lambda: (lambda **values: None),
+    ],
+)
+def test_build_tool_info_rejects_variadic_tool_params(fn_factory):
+    """Tool signatures with *args/**kwargs should be rejected."""
+    sandbox = PythonInterpreter()
+    fn = fn_factory()
+    with pytest.raises(TypeError, match=r"variadic tool parameters \(\*args/\*\*kwargs\) are not supported"):
+        sandbox._build_tool_info(fn)
+
+
+def test_build_tool_info_complex_types():
+    """Test that _build_tool_info handles complex types gracefully."""
 
     def complex_fn(items: list | None = None, data: dict[str, int] | None = None) -> list:
         pass
 
     sandbox = PythonInterpreter()
-    params = sandbox._extract_parameters(complex_fn)
+    params, adapters = sandbox._build_tool_info(complex_fn)
 
     assert len(params) == 2
     assert params[0]["name"] == "items"
@@ -416,8 +481,11 @@ def test_extract_parameters_complex_types():
     assert params[1]["default"] is None
     assert "json_schema" in params[1]
 
+    assert "items" in adapters
+    assert "data" in adapters
 
-def test_extract_parameters_includes_json_schema_for_pydantic_types():
+
+def test_build_tool_info_includes_json_schema_and_adapter_for_pydantic_types():
     class Profile(pydantic.BaseModel):
         name: str
         age: int
@@ -426,7 +494,7 @@ def test_extract_parameters_includes_json_schema_for_pydantic_types():
         return f"hello {profile.name}"
 
     sandbox = PythonInterpreter()
-    params = sandbox._extract_parameters(greet)
+    params, adapters = sandbox._build_tool_info(greet)
 
     assert len(params) == 1
     assert params[0]["name"] == "profile"
@@ -440,28 +508,28 @@ def test_extract_parameters_includes_json_schema_for_pydantic_types():
         "type": "object",
     }
 
-
-def test_coerce_tool_call_args_parses_pydantic_models():
-    class Profile(pydantic.BaseModel):
-        name: str
-        age: int
-
-    def greet(profile: Profile) -> str:
-        return f"hello {profile.name}"
-
-    sandbox = PythonInterpreter()
-    args, kwargs = sandbox._coerce_tool_call_arguments(
-        greet,
-        {"kwargs": {"profile": {"name": "Ada", "age": "36"}}},
-    )
-
-    profile = kwargs.get("profile") if "profile" in kwargs else args[0]
+    assert "profile" in adapters
+    profile = adapters["profile"].validate_python({"name": "Ada", "age": "36"})
     assert isinstance(profile, Profile)
     assert profile.name == "Ada"
     assert profile.age == 36
 
 
-def test_coerce_tool_call_args_raises_on_invalid_pydantic_input():
+def test_build_tool_info_includes_json_schema_for_forward_ref_annotation():
+    def greet(profile: "ForwardRefProfile") -> str:
+        return f"hello {profile.name}"
+
+    sandbox = PythonInterpreter()
+    params, adapters = sandbox._build_tool_info(greet)
+
+    assert len(params) == 1
+    assert params[0]["name"] == "profile"
+    assert "json_schema" in params[0]
+    assert params[0]["json_schema"]["type"] == "object"
+    assert "profile" in adapters
+
+
+def test_build_tool_info_adapter_raises_on_invalid_pydantic_input():
     class Profile(pydantic.BaseModel):
         name: str
         age: int
@@ -470,11 +538,23 @@ def test_coerce_tool_call_args_raises_on_invalid_pydantic_input():
         return f"hello {profile.name}"
 
     sandbox = PythonInterpreter()
+    _, adapters = sandbox._build_tool_info(greet)
+
     with pytest.raises(pydantic.ValidationError):
-        sandbox._coerce_tool_call_arguments(
-            greet,
-            {"kwargs": {"profile": {"name": "Ada", "age": "not-an-int"}}},
-        )
+        adapters["profile"].validate_python({"name": "Ada", "age": "not-an-int"})
+
+
+def test_execute_with_pydantic_model_variable():
+    """Test that pydantic model instances can be injected as input variables."""
+
+    class Person(pydantic.BaseModel):
+        name: str
+        age: int
+
+    person = Person(name="Ada", age=36)
+    with PythonInterpreter() as interpreter:
+        result = interpreter.execute("person['age'] + 1", variables={"person": person})
+        assert result == 37
 
 
 # =============================================================================
