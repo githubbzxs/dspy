@@ -103,7 +103,6 @@ def SUBMIT(output):
   const dictParts = outputs.map(o => `"${o.name}": ${o.name}`);
 
   return `
-import json
 def SUBMIT(${sigParts.join(', ')}):
     raise FinalOutput({${dictParts.join(', ')}})
 `;

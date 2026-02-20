@@ -33,13 +33,6 @@ LARGE_VAR_THRESHOLD = 100 * 1024 * 1024
 # JSON-RPC 2.0 Helpers
 # =============================================================================
 
-# JSON-RPC 2.0 protocol errors (reserved range: -32700 to -32600)
-JSONRPC_PROTOCOL_ERRORS = {
-    "ParseError": -32700,
-    "InvalidRequest": -32600,
-    "MethodNotFound": -32601,
-}
-
 # Application errors (range: -32000 to -32099)
 JSONRPC_APP_ERRORS = {
     "SyntaxError": -32000,
