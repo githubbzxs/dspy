@@ -50,25 +50,9 @@ const JSON_SCHEMA_TYPE_TO_PYTHON = {
   null: "None",
 };
 
-const makeSchemaAssignment = (identifier, schemaMap) => {
-  if (!schemaMap || Object.keys(schemaMap).length === 0) {
-    return "";
-  }
-  const schemaJson = JSON.stringify(schemaMap);
-  return `${identifier}.__json_schema__ = json.loads(${JSON.stringify(schemaJson)})`;
-};
-
 const TOOL_BRIDGE_ERROR_KEY = "__dspy_tool_bridge_error__";
 
 const makeToolWrapper = (toolName, parameters = []) => {
-  const schemaByName = {};
-  for (const p of parameters) {
-    if (p.json_schema) {
-      schemaByName[p.name] = p.json_schema;
-    }
-  }
-  const schemaAssignment = makeSchemaAssignment(toolName, schemaByName);
-
   // Build signature parts: "query: str, limit: int = 10"
   const sigParts = parameters.map(p => {
     let part = p.name;
@@ -93,7 +77,6 @@ def ${toolName}(${signature}):
     if isinstance(parsed, dict) and parsed.get("${TOOL_BRIDGE_ERROR_KEY}"):
         raise RuntimeError(parsed.get("message", "Tool bridge error"))
     return parsed
-${schemaAssignment}
 `;
 };
 
@@ -107,14 +90,6 @@ def SUBMIT(output):
     raise FinalOutput({"output": output})
 `;
   }
-
-  const schemaByName = {};
-  for (const output of outputs) {
-    if (output.json_schema) {
-      schemaByName[output.name] = output.json_schema;
-    }
-  }
-  const schemaAssignment = makeSchemaAssignment("SUBMIT", schemaByName);
 
   const sigParts = outputs.map(o => {
     let part = o.name;
@@ -131,7 +106,6 @@ def SUBMIT(output):
 import json
 def SUBMIT(${sigParts.join(', ')}):
     raise FinalOutput({${dictParts.join(', ')}})
-${schemaAssignment}
 `;
 };
 

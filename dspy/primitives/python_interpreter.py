@@ -353,9 +353,11 @@ class PythonInterpreter:
                 if param_name in kwargs:
                     kwargs[param_name] = adapter.validate_python(kwargs[param_name])
             result = self.tools[tool_name](**kwargs)
+            if isinstance(result, pydantic.BaseModel):
+                result = result.model_dump(mode="json")
             is_json = isinstance(result, (list, dict))
             response = _jsonrpc_result(
-                {"value": json.dumps(result) if is_json else str(result or ""), "type": "json" if is_json else "string"},
+                {"value": json.dumps(result) if is_json else (str(result) if result is not None else ""), "type": "json" if is_json else "string"},
                 request_id
             )
         except Exception as e:

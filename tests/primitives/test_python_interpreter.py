@@ -865,6 +865,48 @@ results
         assert call_count["n"] == 3
 
 
+def test_tool_falsy_return_values():
+    """Tools returning falsy values (0, False, empty string) should preserve them, not coerce to ''."""
+
+    def return_zero() -> int:
+        return 0
+
+    def return_false() -> bool:
+        return False
+
+    def return_empty_string() -> str:
+        return ""
+
+    def return_none() -> str:
+        return None
+
+    with PythonInterpreter(tools={
+        "return_zero": return_zero,
+        "return_false": return_false,
+        "return_empty_string": return_empty_string,
+        "return_none": return_none,
+    }) as sandbox:
+        assert sandbox.execute("return_zero()") == "0"
+        assert sandbox.execute("return_false()") == "False"
+        assert sandbox.execute("return_empty_string()") == ""
+        assert sandbox.execute("return_none()") == ""
+
+
+def test_tool_returning_pydantic_model():
+    """Tools returning pydantic models should serialize to JSON dict, not repr string."""
+
+    class Profile(pydantic.BaseModel):
+        name: str
+        age: int
+
+    def make_profile(name: str, age: int) -> Profile:
+        return Profile(name=name, age=age)
+
+    with PythonInterpreter(tools={"make_profile": make_profile}) as sandbox:
+        result = sandbox.execute('make_profile(name="Ada", age=36)')
+        assert result == {"name": "Ada", "age": 36}
+
+
 def test_enable_read_paths_multiple_files(tmp_path):
     """Test that enable_read_paths works with multiple files in the same directory.
 
