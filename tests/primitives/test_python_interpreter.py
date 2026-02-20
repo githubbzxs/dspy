@@ -704,11 +704,11 @@ def test_nested_and_list_pydantic_tool_args():
         return f"{dept.name} led by {dept.lead.name}: [{names}]"
 
     with PythonInterpreter(tools={"summarize": summarize}) as sandbox:
-        code = '''summarize(dept={
+        code = """summarize(dept={
             "name": "Eng",
             "lead": {"name": "Ada", "role": "CTO"},
             "members": [{"name": "Bob", "role": "SWE"}, {"name": "Eve", "role": "SRE"}]
-        })'''
+        })"""
         result = sandbox.execute(code)
         assert result == "Eng led by Ada: [Bob, Eve]"
 
@@ -752,11 +752,11 @@ def test_multi_pydantic_tools_with_mixed_args():
         return f"{dog.name} is a {dog.breed}"
 
     with PythonInterpreter(tools={"describe_cat": describe_cat, "describe_dog": describe_dog}) as sandbox:
-        code = '''
+        code = """
 c = describe_cat(cat={"name": "Whiskers", "indoor": True}, prefix=">> ")
 d = describe_dog(dog={"name": "Rex", "breed": "Labrador"})
 f"{c} | {d}"
-'''
+"""
         result = sandbox.execute(code)
         assert result == ">> Whiskers is indoor | Rex is a Labrador"
 
@@ -827,11 +827,11 @@ def test_pydantic_variable_passed_to_tool():
     tag_instance = Tag(label="urgent", priority=1)
 
     with PythonInterpreter(tools={"format_tag": format_tag}) as sandbox:
-        code = '''
+        code = """
 label_from_var = tag["label"]
 formatted = format_tag(tag={"label": tag["label"], "priority": tag["priority"]})
 f"{label_from_var} -> {formatted}"
-'''
+"""
         result = sandbox.execute(code, variables={"tag": tag_instance})
         assert result == "urgent -> [1] urgent"
 
@@ -853,13 +853,13 @@ def test_tool_return_roundtrip_and_repeated_calls():
         return f"#{record.id}:{record.label}"
 
     with PythonInterpreter(tools={"fetch": fetch, "describe": describe}) as sandbox:
-        code = '''
+        code = """
 results = []
 for i in [1, 2, 3]:
     data = fetch(id=i)
     results.append(describe(record=data))
 results
-'''
+"""
         result = sandbox.execute(code)
         assert result == ["#1:item_1", "#2:item_2", "#3:item_3"]
         assert call_count["n"] == 3
