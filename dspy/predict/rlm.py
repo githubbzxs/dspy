@@ -479,7 +479,7 @@ class RLM(Module):
 
     def _process_execution_result(
         self,
-        pred: Any,
+        pred: Prediction,
         code: str,
         result: Any,
         history: REPLHistory,
@@ -531,23 +531,17 @@ class RLM(Module):
             logger.info(REPLEntry.format_output(output, self.max_output_chars))
         return history.append(reasoning=pred.reasoning, code=code, output=output)
 
-    def _execute_action_code(
+    def _execute_code(
         self,
         repl: CodeInterpreter,
         code: str,
         input_args: dict[str, Any],
-    ) -> tuple[str, Any]:
-        """Execute one code block and return (code_for_history, result)."""
+    ) -> Any:
+        """Execute code in the interpreter, returning the result or an error string."""
         try:
-            code_for_history = _strip_code_fences(code)
-        except SyntaxError as e:
-            return code, f"[Error] {e}"
-
-        try:
-            result = repl.execute(code_for_history, variables=dict(input_args))
-            return code_for_history, result
+            return repl.execute(code, variables=dict(input_args))
         except (CodeInterpreterError, SyntaxError) as e:
-            return code_for_history, f"[Error] {e}"
+            return f"[Error] {e}"
 
     def _execute_iteration(
         self,
@@ -571,8 +565,15 @@ class RLM(Module):
                 f"Reasoning: {action.reasoning}\nCode:\n{action.code}"
             )
 
-        code_for_history, result = self._execute_action_code(repl, action.code, input_args)
-        return self._process_execution_result(action, code_for_history, result, history, output_field_names)
+        try:
+            code = _strip_code_fences(action.code)
+        except SyntaxError as e:
+            code = action.code
+            result = f"[Error] {e}"
+        else:
+            result = self._execute_code(repl, code, input_args)
+
+        return self._process_execution_result(action, code, result, history, output_field_names)
 
     # =========================================================================
     # Public Interface
@@ -653,8 +654,15 @@ class RLM(Module):
                 f"Reasoning: {pred.reasoning}\nCode:\n{pred.code}"
             )
 
-        code_for_history, result = self._execute_action_code(repl, pred.code, input_args)
-        return self._process_execution_result(pred, code_for_history, result, history, output_field_names)
+        try:
+            code = _strip_code_fences(pred.code)
+        except SyntaxError as e:
+            code = pred.code
+            result = f"[Error] {e}"
+        else:
+            result = self._execute_code(repl, code, input_args)
+
+        return self._process_execution_result(pred, code, result, history, output_field_names)
 
     async def aforward(self, **input_args) -> Prediction:
         """Async version of forward(). Execute RLM to produce outputs.
