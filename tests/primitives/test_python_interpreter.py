@@ -682,6 +682,189 @@ def test_large_variable_threshold_boundary():
     assert "x" in interpreter._pending_large_vars, "Serialized size over threshold should use filesystem"
 
 
+# =============================================================================
+# Pydantic Stress Tests
+# =============================================================================
+
+
+def test_nested_and_list_pydantic_tool_args():
+    """Deep nesting (3 levels) and list[Model] field coerced from dicts."""
+
+    class Employee(pydantic.BaseModel):
+        name: str
+        role: str
+
+    class Department(pydantic.BaseModel):
+        name: str
+        lead: Employee
+        members: list[Employee]
+
+    def summarize(dept: Department) -> str:
+        names = ", ".join(m.name for m in dept.members)
+        return f"{dept.name} led by {dept.lead.name}: [{names}]"
+
+    with PythonInterpreter(tools={"summarize": summarize}) as sandbox:
+        code = '''summarize(dept={
+            "name": "Eng",
+            "lead": {"name": "Ada", "role": "CTO"},
+            "members": [{"name": "Bob", "role": "SWE"}, {"name": "Eve", "role": "SRE"}]
+        })'''
+        result = sandbox.execute(code)
+        assert result == "Eng led by Ada: [Bob, Eve]"
+
+
+def test_pydantic_optional_and_default_fields():
+    """Optional fields (None/omitted) and defaults preserved through coercion."""
+
+    class Config(pydantic.BaseModel):
+        name: str
+        mode: str = "standard"
+        tag: str | None = None
+
+    def show(config: Config) -> str:
+        return f"{config.name}:{config.mode}:{config.tag}"
+
+    with PythonInterpreter(tools={"show": show}) as sandbox:
+        # All provided
+        assert sandbox.execute('show(config={"name": "A", "mode": "fast", "tag": "v1"})') == "A:fast:v1"
+        # Defaults kick in
+        assert sandbox.execute('show(config={"name": "B"})') == "B:standard:None"
+        # Explicit None
+        assert sandbox.execute('show(config={"name": "C", "tag": None})') == "C:standard:None"
+
+
+def test_multi_pydantic_tools_with_mixed_args():
+    """Multiple tools with different pydantic types + simple args; tests adapter isolation."""
+
+    class Cat(pydantic.BaseModel):
+        name: str
+        indoor: bool
+
+    class Dog(pydantic.BaseModel):
+        name: str
+        breed: str
+
+    def describe_cat(cat: Cat, prefix: str = "") -> str:
+        loc = "indoor" if cat.indoor else "outdoor"
+        return f"{prefix}{cat.name} is {loc}"
+
+    def describe_dog(dog: Dog) -> str:
+        return f"{dog.name} is a {dog.breed}"
+
+    with PythonInterpreter(tools={"describe_cat": describe_cat, "describe_dog": describe_dog}) as sandbox:
+        code = '''
+c = describe_cat(cat={"name": "Whiskers", "indoor": True}, prefix=">> ")
+d = describe_dog(dog={"name": "Rex", "breed": "Labrador"})
+f"{c} | {d}"
+'''
+        result = sandbox.execute(code)
+        assert result == ">> Whiskers is indoor | Rex is a Labrador"
+
+
+def test_pydantic_constraint_validation_errors():
+    """Constrained fields and nested invalid types surface validation errors."""
+
+    class Inner(pydantic.BaseModel):
+        score: int = pydantic.Field(ge=0, le=100)
+
+    class Outer(pydantic.BaseModel):
+        inner: Inner
+
+    def process(data: Outer) -> str:
+        return str(data.inner.score)
+
+    with PythonInterpreter(tools={"process": process}) as sandbox:
+        # Valid
+        assert sandbox.execute('process(data={"inner": {"score": 85}})') == "85"
+        # Invalid type nested
+        with pytest.raises(CodeInterpreterError, match="(?i)validationerror"):
+            sandbox.execute('process(data={"inner": {"score": "not-a-number"}})')
+        # Constraint violation
+        with pytest.raises(CodeInterpreterError, match="(?i)validationerror"):
+            sandbox.execute('process(data={"inner": {"score": 150}})')
+
+
+def test_pydantic_models_as_input_variables():
+    """Nested model, list of models, and dict of models all injected as variables."""
+
+    class Address(pydantic.BaseModel):
+        city: str
+
+    class Person(pydantic.BaseModel):
+        name: str
+        address: Address
+
+    class Score(pydantic.BaseModel):
+        value: int
+
+    person = Person(name="Ada", address=Address(city="London"))
+    items = [Score(value=80), Score(value=90)]
+    registry = {"alice": Score(value=95), "bob": Score(value=72)}
+
+    with PythonInterpreter() as interpreter:
+        code = """
+city = person['address']['city']
+avg = sum(i['value'] for i in items) / len(items)
+grades = [k + ':' + str(s['value']) for k, s in sorted(registry.items())]
+(city, avg, grades)
+"""
+        result = interpreter.execute(code, variables={
+            "person": person, "items": items, "registry": registry,
+        })
+        assert result == ["London", 85.0, ["alice:95", "bob:72"]]
+
+
+def test_pydantic_variable_passed_to_tool():
+    """Pydantic model injected as variable (dict), then passed to a pydantic-typed tool."""
+
+    class Tag(pydantic.BaseModel):
+        label: str
+        priority: int
+
+    def format_tag(tag: Tag) -> str:
+        return f"[{tag.priority}] {tag.label}"
+
+    tag_instance = Tag(label="urgent", priority=1)
+
+    with PythonInterpreter(tools={"format_tag": format_tag}) as sandbox:
+        code = '''
+label_from_var = tag["label"]
+formatted = format_tag(tag={"label": tag["label"], "priority": tag["priority"]})
+f"{label_from_var} -> {formatted}"
+'''
+        result = sandbox.execute(code, variables={"tag": tag_instance})
+        assert result == "urgent -> [1] urgent"
+
+
+def test_tool_return_roundtrip_and_repeated_calls():
+    """Tool returns dict consumed by pydantic tool; repeated calls have no state leak."""
+
+    class Record(pydantic.BaseModel):
+        id: int
+        label: str
+
+    call_count = {"n": 0}
+
+    def fetch(id: int = 0) -> dict:
+        return {"id": id, "label": f"item_{id}"}
+
+    def describe(record: Record) -> str:
+        call_count["n"] += 1
+        return f"#{record.id}:{record.label}"
+
+    with PythonInterpreter(tools={"fetch": fetch, "describe": describe}) as sandbox:
+        code = '''
+results = []
+for i in [1, 2, 3]:
+    data = fetch(id=i)
+    results.append(describe(record=data))
+results
+'''
+        result = sandbox.execute(code)
+        assert result == ["#1:item_1", "#2:item_2", "#3:item_3"]
+        assert call_count["n"] == 3
+
+
 def test_enable_read_paths_multiple_files(tmp_path):
     """Test that enable_read_paths works with multiple files in the same directory.
 
