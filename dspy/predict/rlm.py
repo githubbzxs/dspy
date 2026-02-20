@@ -643,7 +643,12 @@ class RLM(Module):
                 f"Reasoning: {pred.reasoning}\nCode:\n{pred.code}"
             )
 
-        code = _strip_code_fences(pred.code)
+        try:
+            code = _strip_code_fences(pred.code)
+        except SyntaxError as e:
+            code = pred.code
+            result = f"[Error] {e}"
+            return self._process_execution_result(pred, code, result, history, output_field_names)
         result = self._execute_code(repl, code, input_args)
         return self._process_execution_result(pred, code, result, history, output_field_names)
 
