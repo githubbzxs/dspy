@@ -85,10 +85,10 @@ def _strip_code_fences(code: str) -> str:
     if not separator:
         return code
 
-    # Accept python-labeled fences or bare ``` fences
+    # Accept python-labeled fences or bare ``` fences; reject explicit non-Python tags
     lang = (lang_line.strip().split(maxsplit=1)[0] if lang_line.strip() else "").lower()
     if lang not in _PYTHON_FENCE_LANGS:
-        return code
+        raise SyntaxError(f"Expected Python code but got ```{lang} fence. Write Python code, not {lang}.")
 
     # Find closing fence
     block_end = remainder.find("```")

@@ -287,8 +287,6 @@ class TestRLMCodeFenceParsing:
             ("```python\nprint(1)\n```\nsome trailing text", "print(1)"),
             # Unclosed fence (just return the body)
             ("```python\nprint('oops')", "print('oops')"),
-            # Non-python fence passed through as-is
-            ('```json\n{"a": 1}\n```', '```json\n{"a": 1}\n```'),
             # Double fences (outer decorative ```)
             ("```\n```python\nprint(1)\n```\n```", "print(1)"),
             ("```\n```\nprint(2)\n```\n```", "print(2)"),
@@ -296,6 +294,10 @@ class TestRLMCodeFenceParsing:
     )
     def test_strip_code_fences(self, raw, expected):
         assert _strip_code_fences(raw) == expected
+
+    def test_strip_code_fences_rejects_non_python_lang(self):
+        with pytest.raises(SyntaxError, match="json"):
+            _strip_code_fences("```json\n{\"a\": 1}\n```")
 
 
 class TestRLMFormatting:
