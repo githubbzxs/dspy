@@ -560,7 +560,12 @@ class RLM(Module):
                 f"Reasoning: {action.reasoning}\nCode:\n{action.code}"
             )
 
-        code = _strip_code_fences(action.code)
+        try:
+            code = _strip_code_fences(action.code)
+        except SyntaxError as e:
+            code = action.code
+            result = f"[Error] {e}"
+            return self._process_execution_result(action, code, result, history, output_field_names)
         result = self._execute_code(repl, code, input_args)
         return self._process_execution_result(action, code, result, history, output_field_names)
 

@@ -297,7 +297,7 @@ class TestRLMCodeFenceParsing:
 
     def test_strip_code_fences_rejects_non_python_lang(self):
         with pytest.raises(SyntaxError, match="json"):
-            _strip_code_fences("```json\n{\"a\": 1}\n```")
+            _strip_code_fences('```json\n{"a": 1}\n```')
 
 
 class TestRLMFormatting:
@@ -598,6 +598,21 @@ class TestRLMToolExceptions:
         result = rlm.forward(query="test")
         assert result.answer == "recovered"
         assert result.trajectory[0]["output"].startswith("[Error] invalid syntax")
+
+    def test_syntax_error_from_strip_code_fences_is_recoverable(self):
+        """SyntaxError raised by _strip_code_fences (e.g. non-Python fence tag) should be recoverable."""
+        mock = MockInterpreter(responses=[
+            FinalOutput({"answer": "recovered"}),
+        ])
+        rlm = RLM("query -> answer", max_iterations=5, interpreter=mock)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Wrong language", "code": "```bash\nls -la\n```"},
+            {"reasoning": "Recover", "code": 'SUBMIT("recovered")'},
+        ])
+
+        result = rlm.forward(query="test")
+        assert result.answer == "recovered"
+        assert result.trajectory[0]["output"].startswith("[Error]")
 
 
 class TestRLMDynamicSignature:
