@@ -61,46 +61,41 @@ IMPORTANT: This is ITERATIVE. Each code block you write will execute, you'll see
 
 You have max {max_llm_calls} sub-LLM calls. When done, call SUBMIT() with your output."""
 
-_PYTHON_FENCE_LANGS = {"python", "py", "python3", "py3"}
+_PYTHON_FENCE_LANGS = {"python", "py", "python3", "py3", ""}
 
 
 def _strip_code_fences(code: str) -> str:
+    """Extract Python code from markdown fences, or return as-is if no fences."""
     code = code.strip()
     if "```" not in code:
         return code
 
-    if not code.startswith("```"):
-        raise SyntaxError(
-            "Expected code in a Python markdown fence (```python ... ```), "
-            "or plain Python code with no markdown fences"
-        )
+    # Strip outer decorative fence pairs (e.g. ```\n```python\n...\n```\n```)
+    lines = code.splitlines()
+    while len(lines) >= 2 and lines[0].strip() == "```" and lines[-1].strip() == "```":
+        lines.pop(0)
+        lines.pop()
+    code = "\n".join(lines).strip()
+    if "```" not in code:
+        return code
 
-    lang_line, separator, remainder = code[3:].partition("\n")
+    # Find the first opening fence (skip any text before it)
+    fence_start = code.find("```")
+    lang_line, separator, remainder = code[fence_start + 3:].partition("\n")
     if not separator:
-        raise SyntaxError("Invalid fenced code block: missing newline after opening fence")
+        return code
 
-    lang_header = lang_line.strip()
-    lang = (lang_header.split(maxsplit=1)[0] if lang_header else "").lower()
+    # Accept python-labeled fences or bare ``` fences
+    lang = (lang_line.strip().split(maxsplit=1)[0] if lang_line.strip() else "").lower()
     if lang not in _PYTHON_FENCE_LANGS:
-        shown_lang = lang if lang else "<none>"
-        raise SyntaxError(
-            "Expected a Python-labeled code fence (```python ... ```), "
-            f"but found: {shown_lang}"
-        )
+        return code
 
-    block_end = remainder.rfind("```")
+    # Find closing fence
+    block_end = remainder.find("```")
     if block_end == -1:
-        raise SyntaxError("Invalid fenced code block: missing closing ```")
+        return remainder.strip()
 
-    body = remainder[:block_end]
-    trailing = remainder[block_end + 3:]
-    if trailing.strip():
-        raise SyntaxError("Invalid fenced code block: extra text after closing fence")
-
-    if any(line.strip().startswith("```") for line in body.splitlines()):
-        raise SyntaxError("Invalid fenced code block: multiple fenced blocks are not supported")
-
-    return body.strip()
+    return remainder[:block_end].strip()
 
 
 @experimental
@@ -565,14 +560,8 @@ class RLM(Module):
                 f"Reasoning: {action.reasoning}\nCode:\n{action.code}"
             )
 
-        try:
-            code = _strip_code_fences(action.code)
-        except SyntaxError as e:
-            code = action.code
-            result = f"[Error] {e}"
-        else:
-            result = self._execute_code(repl, code, input_args)
-
+        code = _strip_code_fences(action.code)
+        result = self._execute_code(repl, code, input_args)
         return self._process_execution_result(action, code, result, history, output_field_names)
 
     # =========================================================================
@@ -654,14 +643,8 @@ class RLM(Module):
                 f"Reasoning: {pred.reasoning}\nCode:\n{pred.code}"
             )
 
-        try:
-            code = _strip_code_fences(pred.code)
-        except SyntaxError as e:
-            code = pred.code
-            result = f"[Error] {e}"
-        else:
-            result = self._execute_code(repl, code, input_args)
-
+        code = _strip_code_fences(pred.code)
+        result = self._execute_code(repl, code, input_args)
         return self._process_execution_result(pred, code, result, history, output_field_names)
 
     async def aforward(self, **input_args) -> Prediction:

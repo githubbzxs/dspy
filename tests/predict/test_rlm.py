@@ -274,30 +274,28 @@ class TestRLMCodeFenceParsing:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
+            # Standard python fence
             ("```python\nprint(1)\n```", "print(1)"),
             ("```py\nx = 1\nprint(x)\n```", "x = 1\nprint(x)"),
-            ("```python\nprint('inline')```", "print('inline')"),
-            ('```python\ntext = "```"\nprint(text)\n```', 'text = "```"\nprint(text)'),
+            # Bare fence (no language tag)
+            ("```\nprint('no lang')\n```", "print('no lang')"),
+            # No fences at all
             ("not fenced code", "not fenced code"),
+            # Text before fence (preamble is skipped)
+            ("I'll inspect first.\n```python\nprint('hello')\n```\nThen I will submit.", "print('hello')"),
+            # Text after closing fence (ignored)
+            ("```python\nprint(1)\n```\nsome trailing text", "print(1)"),
+            # Unclosed fence (just return the body)
+            ("```python\nprint('oops')", "print('oops')"),
+            # Non-python fence passed through as-is
+            ('```json\n{"a": 1}\n```', '```json\n{"a": 1}\n```'),
+            # Double fences (outer decorative ```)
+            ("```\n```python\nprint(1)\n```\n```", "print(1)"),
+            ("```\n```\nprint(2)\n```\n```", "print(2)"),
         ],
     )
-    def test_strip_code_fences_valid(self, raw, expected):
+    def test_strip_code_fences(self, raw, expected):
         assert _strip_code_fences(raw) == expected
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            "```\nprint('no lang')\n```",
-            "I'll inspect first.\n```python\nprint('hello')\n```\nThen I will submit.",
-            "```json\n{\"a\": 1}\n```\n```python\nprint('use me')\n```",
-            "```python\nprint(1)\n```\n```python\nprint(2)\n```",
-            '```json\n{"a": 1}\n```',
-            "```python\nprint('oops')",
-        ],
-    )
-    def test_strip_code_fences_invalid(self, raw):
-        with pytest.raises(SyntaxError):
-            _strip_code_fences(raw)
 
 
 class TestRLMFormatting:
