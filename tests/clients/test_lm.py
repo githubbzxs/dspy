@@ -190,12 +190,29 @@ def test_zero_temperature_rollout_warns_once(monkeypatch):
 
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
-    lm = dspy.LM(model="openai/dspy-test-model", model_type="chat")
+    lm = dspy.LM(model="openai/dspy-test-model", model_type="chat", temperature=0)
     with pytest.warns(UserWarning, match="rollout_id has no effect"):
         lm("Query", rollout_id=1)
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         lm("Query", rollout_id=2)
+        assert len(record) == 0
+
+
+def test_rollout_id_with_default_temperature_does_not_warn(monkeypatch):
+    def fake_completion(*, cache, num_retries, retry_strategy, **request):
+        return ModelResponse(
+            choices=[Choices(message=Message(role="assistant", content="Hi!"))],
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            model="openai/gpt-5-nano",
+        )
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        lm = dspy.LM(model="openai/gpt-5-nano", model_type="chat", rollout_id=1)
+        lm("Query")
         assert len(record) == 0
 
 
